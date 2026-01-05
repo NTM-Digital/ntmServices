@@ -1,8 +1,11 @@
 import PG from 'pg';
 import dotenv from 'dotenv';
 
-// Load environment variables from .env file
-dotenv.config();
+// Load environment variables from .env file in development
+// In production (Coolify), environment variables are injected directly
+if (process.env.NODE_ENV !== 'production') {
+  dotenv.config();
+}
 
 interface CreateMonitorParams {
   name: string;
