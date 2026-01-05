@@ -292,6 +292,22 @@ class MonitorController {
       };
     }
   }
+
+  async updateLastCheck(monitorId: string): Promise<{ success?: boolean; error?: string; status?: number }> {
+    try {
+      await monitorDatasource.updateLastCheck(monitorId);
+      return {
+        success: true,
+        status: 200
+      };
+    } catch (error) {
+      console.error('Error in updateLastCheck:', error);
+      return {
+        error: 'Failed to update last check',
+        status: 500
+      };
+    }
+  }
 }
 
 export const monitorController = new MonitorController();

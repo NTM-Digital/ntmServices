@@ -250,6 +250,23 @@ class MonitorDatasource {
       throw new Error('Failed to close incident');
     }
   }
+
+  async updateLastCheck(monitorId: string) {
+    try {
+      const client = await this.pool.connect();
+      const query = `
+        UPDATE monitored_urls
+        SET last_check_at = NOW()
+        WHERE id = $1
+      `;
+      const values = [monitorId];
+      await client.query(query, values);
+      client.release();
+    } catch (error) {
+      console.error('Error updating last check:', error);
+      throw new Error('Failed to update last check');
+    }
+  }
 }
 
 export const monitorDatasource = new MonitorDatasource();
