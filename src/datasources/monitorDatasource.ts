@@ -23,6 +23,7 @@ interface UpdateMonitorParams {
 
 class MonitorDatasource {
   private pool: PG.Pool;
+  private notificationClient: PG.Client | null = null;
 
   constructor() {
     this.pool = new PG.Pool({
@@ -265,6 +266,47 @@ class MonitorDatasource {
     } catch (error) {
       console.error('Error updating last check:', error);
       throw new Error('Failed to update last check');
+    }
+  }
+
+  async listenForMonitorChanges(callback: (payload: any) => void) {
+    try {
+      this.notificationClient = new PG.Client({
+        connectionString: process.env.POSTGRES_URL
+      });
+
+      await this.notificationClient.connect();
+
+      this.notificationClient.on('notification', (msg) => {
+        if (msg.channel === 'monitor_changes') {
+          try {
+            const payload = JSON.parse(msg.payload || '{}');
+            console.log('Monitor change detected:', payload);
+            callback(payload);
+          } catch (error) {
+            console.error('Error parsing notification payload:', error);
+          }
+        }
+      });
+
+      await this.notificationClient.query('LISTEN monitor_changes');
+      console.log('Listening for monitor changes...');
+    } catch (error) {
+      console.error('Error setting up monitor change listener:', error);
+      throw error;
+    }
+  }
+
+  async stopListening() {
+    if (this.notificationClient) {
+      try {
+        await this.notificationClient.query('UNLISTEN monitor_changes');
+        await this.notificationClient.end();
+        this.notificationClient = null;
+        console.log('Stopped listening for monitor changes');
+      } catch (error) {
+        console.error('Error stopping listener:', error);
+      }
     }
   }
 }
