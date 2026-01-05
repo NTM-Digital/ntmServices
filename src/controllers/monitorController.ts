@@ -308,6 +308,24 @@ class MonitorController {
       };
     }
   }
+
+  async listenForMonitorChanges(callback: (payload: any) => void): Promise<void> {
+    try {
+      await monitorDatasource.listenForMonitorChanges(callback);
+    } catch (error) {
+      console.error('Error in listenForMonitorChanges:', error);
+      throw error;
+    }
+  }
+
+  async stopListeningForChanges(): Promise<void> {
+    try {
+      await monitorDatasource.stopListening();
+    } catch (error) {
+      console.error('Error in stopListeningForChanges:', error);
+      throw error;
+    }
+  }
 }
 
 export const monitorController = new MonitorController();

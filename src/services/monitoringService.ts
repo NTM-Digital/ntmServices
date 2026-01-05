@@ -10,19 +10,56 @@ type MonitorData = {
 };
 
 class MonitoringService {
+  private monitors: Map<string, Monitor> = new Map();
+
   async startMonitoring() {
     console.log("Monitoring service started.");
 
+    // Load and start all monitors
+    await this.reloadMonitors();
+
+    // Listen for changes in the database
+    await monitorController.listenForMonitorChanges((payload) => {
+      console.log(`Received monitor change: ${payload.operation} for ID: ${payload.id}`);
+      this.reloadMonitors();
+    });
+  }
+
+  async reloadMonitors() {
+    console.log("Reloading monitors...");
+
+    // Stop all existing monitors
+    for (const monitor of this.monitors.values()) {
+      monitor.stop();
+    }
+    this.monitors.clear();
+
+    // Load fresh monitor data from database
     const { monitors } = await monitorController.getAllMonitors() as {
       monitors: MonitorData[];
     };
 
     console.log("URLs to monitor:", monitors.length);
 
+    // Start new monitors
     for (const data of monitors) {
       const monitor = new Monitor(data);
+      this.monitors.set(data.id, monitor);
       monitor.start(); // fire-and-forget
     }
+  }
+
+  async stopMonitoring() {
+    console.log("Stopping monitoring service...");
+
+    // Stop all monitors
+    for (const monitor of this.monitors.values()) {
+      monitor.stop();
+    }
+    this.monitors.clear();
+
+    // Stop listening for database changes
+    await monitorController.stopListeningForChanges();
   }
 }
 
