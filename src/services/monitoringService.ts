@@ -50,6 +50,9 @@ class Monitor {
     let errorMessage: string | null = null;
     let sleepTime = this.data.check_interval;
 
+    // Update last check timestamp
+    await monitorController.updateLastCheck(this.data.id);
+
     try {
       console.log(
         `Checking ${this.data.name} → ${this.data.url}`
