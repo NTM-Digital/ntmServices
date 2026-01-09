@@ -1,4 +1,5 @@
 import { monitoringService } from './services/monitoringService.js';
+import { databasesSyncService } from './services/databasesSyncService.js';
 
 // Start all services
 export async function startServices() {
@@ -6,6 +7,8 @@ export async function startServices() {
 
     // Start monitoring service
     await monitoringService.startMonitoring();
+    // Start database synchronization service
+    await databasesSyncService.startSync();
 
     console.log('All services started.');
 }
