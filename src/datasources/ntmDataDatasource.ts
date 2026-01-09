@@ -40,6 +40,31 @@
     }
   }
 
+    export const findShortsWithoutCreatorsOrFilmingDates = async (): Promise<VideoWithoutCreator[]> => {
+    const client = await pool.connect();
+    try {
+      const query = `SELECT DISTINCT
+            os.video_id,
+            os.owned_channel_id,
+            os.filming_date,
+            ouj.data_users_id 
+        FROM owned_shorts os
+        INNER JOIN shorts s
+            ON os.video_id = s.video_id
+        LEFT JOIN owned_shorts_data_users_junction ouj
+            ON ouj.video_id = os.video_id
+        WHERE s.publish_date >= TIMESTAMP '2024-01-01'
+        AND (os.filming_date IS NULL OR ouj.video_id IS NULL)`;
+      const result = await client.query(query);
+      return result.rows;
+    } catch (error) {
+      console.error('Error finding shorts without creators:', error);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   export const getDataUserIdByName = async (name: string): Promise<number | null> => {
     const client = await pool.connect();
     try {
@@ -71,6 +96,19 @@
     }
   } 
 
+    export const setFilmingDateForShort = async (videoId: string, filmingDate: string): Promise<void> => {
+    const client = await pool.connect();
+    try {
+        const query = `UPDATE owned_shorts SET filming_date = $1 WHERE video_id = $2`;
+        await client.query(query, [filmingDate, videoId]);
+    } catch (error) {
+        console.error('Error setting filming date for short:', error);
+        throw error;
+    } finally {
+        client.release();
+    }
+  }
+
   export const setVideoCreator = async (videoId: string, dataUserId: number, owned_channel_id:number): Promise<void> => {
     const client = await pool.connect();
     try {
@@ -79,6 +117,20 @@
         await client.query(query, [videoId, dataUserId, owned_channel_id]);
     } catch (error) {
         console.error('Error setting video creator:', error);
+        throw error;
+    } finally {
+        client.release();
+    }
+  }
+
+    export const setShortCreator = async (videoId: string, dataUserId: number, owned_channel_id:number): Promise<void> => {
+    const client = await pool.connect();
+    try {
+        const query = `INSERT INTO owned_shorts_data_users_junction (video_id, data_users_id, owned_channels_id, percentage) VALUES ($1, $2, $3, 100)
+                       ON CONFLICT DO NOTHING`; 
+        await client.query(query, [videoId, dataUserId, owned_channel_id]);
+    } catch (error) {
+        console.error('Error setting short creator:', error);
         throw error;
     } finally {
         client.release();
