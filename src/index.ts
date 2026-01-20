@@ -1,5 +1,6 @@
 import { monitoringService } from './services/monitoringService.js';
 import { databasesSyncService } from './services/databasesSyncService.js';
+import { ntmDataFileCleanUpService } from './services/ntmDataFileCleanUpService.js';
 
 // Start all services
 export async function startServices() {
@@ -9,6 +10,8 @@ export async function startServices() {
     await monitoringService.startMonitoring();
     // Start database synchronization service
     await databasesSyncService.startSync();
+    // Start NTM data file clean up service
+    await ntmDataFileCleanUpService.startSync();
 
     console.log('All services started.');
 }
