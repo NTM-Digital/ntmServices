@@ -112,9 +112,14 @@
   export const setVideoCreator = async (videoId: string, dataUserId: number, owned_channel_id:number): Promise<void> => {
     const client = await pool.connect();
     try {
-        const query = `INSERT INTO owned_videos_data_users_junction (video_id, data_users_id, owned_channels_id, percentage) VALUES ($1, $2, $3, 100)
+      // First, delete any existing assignments for this video/channel combination
+      const deleteQuery = `DELETE FROM owned_videos_data_users_junction
+                          WHERE video_id = $1 AND owned_channels_id = $2`;
+      await client.query(deleteQuery, [videoId, owned_channel_id]);
+      
+      const query = `INSERT INTO owned_videos_data_users_junction (video_id, data_users_id, owned_channels_id, percentage) VALUES ($1, $2, $3, 100)
                        ON CONFLICT DO NOTHING`; 
-        await client.query(query, [videoId, dataUserId, owned_channel_id]);
+      await client.query(query, [videoId, dataUserId, owned_channel_id]);
     } catch (error) {
         console.error('Error setting video creator:', error);
         throw error;
@@ -126,6 +131,10 @@
     export const setShortCreator = async (videoId: string, dataUserId: number, owned_channel_id:number): Promise<void> => {
     const client = await pool.connect();
     try {
+        const deleteQuery = `DELETE FROM owned_shorts_data_users_junction
+                            WHERE video_id = $1 AND owned_channels_id = $2`;
+        await client.query(deleteQuery, [videoId, owned_channel_id]);
+
         const query = `INSERT INTO owned_shorts_data_users_junction (video_id, data_users_id, owned_channels_id, percentage) VALUES ($1, $2, $3, 100)
                        ON CONFLICT DO NOTHING`; 
         await client.query(query, [videoId, dataUserId, owned_channel_id]);
