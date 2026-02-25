@@ -15,6 +15,14 @@ class VideoViewsOutlierController {
             console.error('Error calculating and storing median views:', error);
             throw error;
         }
+        try{
+            await videoViewsOutlierDatasource.setVideoTrajectory();
+            await videoViewsOutlierDatasource.setGrowthFactor();
+        }
+        catch (error) {
+            console.error('Error calculating and storing video trajectory and growth factor:', error);
+            throw error;    
+        }
     }
 }
 

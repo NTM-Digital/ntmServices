@@ -1,4 +1,4 @@
-import { syncVideoCreatorsAndFilmingDates } from "../controllers/databasesSyncController.js";
+import { videoViewsOutlierController } from "../controllers/videoViewsOutlierController.js";
 
 const SYNC_INTERVAL = 24 * 60 * 60; // 24 hours in seconds
 
@@ -18,7 +18,7 @@ class VideoViewsOutlierService {
   private async performSync() {
     try {
       console.log("Performing video views outlier sync...");
-      await syncVideoCreatorsAndFilmingDates();
+      await videoViewsOutlierController.calculateAndStoreMedianViews();
       console.log("Video views outlier sync completed.");
     } catch (error) {
       console.error("Video views outlier sync failed:", error);

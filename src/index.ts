@@ -1,6 +1,7 @@
 import { monitoringService } from './services/monitoringService.js';
 import { databasesSyncService } from './services/databasesSyncService.js';
 import { ntmDataFileCleanUpService } from './services/ntmDataFileCleanUpService.js';
+import { videoViewsOutlierService } from './services/videoViewsOutlierService.js';
 
 // Start all services
 export async function startServices() {
@@ -12,6 +13,8 @@ export async function startServices() {
     await databasesSyncService.startSync();
     // Start NTM data file clean up service
     await ntmDataFileCleanUpService.startSync();
+    // Start video views outlier service
+    await videoViewsOutlierService.startSync();
 
     console.log('All services started.');
 }
