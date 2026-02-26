@@ -26,28 +26,63 @@ class VideoViewsOutlierDatasource {
         const client = await this.pool.connect();
         try{
             const query =`
-            SELECT 
-                channel_id,
-                percentile_cont(0.5) WITHIN GROUP (ORDER BY views_first_24h) FILTER (
-                    WHERE
-                    publish_date <= now() - interval '1 day'
-                    AND views_first_24h IS NOT NULL
-                    AND views_first_24h > 0
-                ) AS median_first_24h,
-                percentile_cont(0.5) WITHIN GROUP (ORDER BY views_first_week) 
-                    FILTER (
-                    WHERE
-                        publish_date <= now() - interval '7 days'
+            WITH per_channel_floor AS (
+                SELECT
+                    channel_id,
+                    -- floor for "low performers" (tune 0.2 -> 0.1/0.3 depending on strictness)
+                    percentile_cont(0.2) WITHIN GROUP (ORDER BY views_first_24h) FILTER (
+                    WHERE publish_date <= now() - interval '1 day'
+                        AND views_first_24h IS NOT NULL
+                        AND views_first_24h > 0
+                    ) AS floor_24h,
+                    percentile_cont(0.2) WITHIN GROUP (ORDER BY views_first_week) FILTER (
+                    WHERE publish_date <= now() - interval '7 days'
                         AND views_first_week IS NOT NULL
                         AND views_first_week > 0
-                    ) 
-                AS median_first_week,
-                percentile_cont(0.5) WITHIN GROUP (ORDER BY (views_first_week::float / NULLIF(views_first_24h, 0))) 
-                AS median_trajectory,
-                percentile_cont(0.9) WITHIN GROUP (ORDER BY (views_first_week::float / NULLIF(views_first_24h, 0))) 
-                AS p90_trajectory
-            FROM videos
-            GROUP BY channel_id`
+                    ) AS floor_week
+                FROM videos
+                GROUP BY channel_id
+                )
+                SELECT
+                v.channel_id,
+
+                percentile_cont(0.5) WITHIN GROUP (ORDER BY v.views_first_24h) FILTER (
+                    WHERE v.publish_date <= now() - interval '1 day'
+                    AND v.views_first_24h IS NOT NULL
+                    AND v.views_first_24h > 0
+                    AND v.views_first_24h >= f.floor_24h
+                ) AS median_first_24h,
+
+                percentile_cont(0.5) WITHIN GROUP (ORDER BY v.views_first_week) FILTER (
+                    WHERE v.publish_date <= now() - interval '7 days'
+                    AND v.views_first_week IS NOT NULL
+                    AND v.views_first_week > 0
+                    AND v.views_first_week >= f.floor_week
+                ) AS median_first_week,
+
+                percentile_cont(0.5) WITHIN GROUP (
+                    ORDER BY (v.views_first_week::float / NULLIF(v.views_first_24h, 0))
+                ) FILTER (
+                    WHERE v.publish_date <= now() - interval '7 days'
+                    AND v.views_first_24h > 0
+                    AND v.views_first_week > 0
+                    AND v.views_first_24h >= f.floor_24h
+                    AND v.views_first_week >= f.floor_week
+                ) AS median_trajectory,
+
+                percentile_cont(0.9) WITHIN GROUP (
+                    ORDER BY (v.views_first_week::float / NULLIF(v.views_first_24h, 0))
+                ) FILTER (
+                    WHERE v.publish_date <= now() - interval '7 days'
+                    AND v.views_first_24h > 0
+                    AND v.views_first_week > 0
+                    AND v.views_first_24h >= f.floor_24h
+                    AND v.views_first_week >= f.floor_week
+                ) AS p90_trajectory
+
+                FROM videos v
+                JOIN per_channel_floor f USING (channel_id)
+                GROUP BY v.channel_id;`
             const result = await client.query(query);
             return result.rows;
         }
