@@ -45,55 +45,55 @@ class TrelloGDriveSyncController {
     }
 
     private async addOrUpdateTrelloCards(tasks: TaskRow[]) {
-        for (const change of tasks) {
-            if (change.state === 'new') {
-                console.log('Adding card to Trello:', change.item, 'Status:', change.status);
+        for (const task of tasks) {
+            if (task.state === 'new') {
+                console.log('Adding card to Trello:', task.item, 'Status:', task.status);
                 const cardId = await trelloDatasource.trelloDatasource.addCard(
-                    change.date,
-                    change.item,
-                    change.notesResourceLinks,
-                    change.status,
-                    change.nextSteps,
-                    change.pointPerson
+                    task.date,
+                    task.item,
+                    task.notesResourceLinks,
+                    task.status,
+                    task.nextSteps,
+                    task.pointPerson
                 );
                 console.log('Card created, returned data:', cardId);
                 if (cardId) {
-                    console.log('Updating Google Sheet with card ID:', cardId, 'for item:', change.item);
-                    const updated = await gDriveDatasource.gDriveDatasource.updateCardId(change.item, cardId);
+                    console.log('Updating Google Sheet with card ID:', cardId, 'for item:', task.item);
+                    const updated = await gDriveDatasource.gDriveDatasource.updateCardId(task.item, cardId);
                     console.log('Update result:', updated);
 
                     // Update oldGDriveData with the new trelloCardId
-                    const oldDataIndex = this.oldGDriveData.findIndex(row => row.item === change.item);
+                    const oldDataIndex = this.oldGDriveData.findIndex(row => row.item === task.item);
                     if (oldDataIndex !== -1) {
                         this.oldGDriveData[oldDataIndex].trelloCardId = cardId;
                     }
                 } else {
                     console.log('No card ID returned from Trello');
                 }
-            } else if (change.state === 'updated') {
-                console.log('Updating card in Trello:', change.item, 'Status:', change.status);
-                if (!change.trelloCardId || change.trelloCardId.trim() === '') {
-                    console.log('Cannot update card - no Trello card ID found for:', change.item);
+            } else if (task.state === 'updated') {
+                console.log('Updating card in Trello:', task.item, 'Status:', task.status);
+                if (!task.trelloCardId || task.trelloCardId.trim() === '') {
+                    console.log('Cannot update card - no Trello card ID found for:', task.item);
                     continue;
                 }
                 const updated = await trelloDatasource.trelloDatasource.updateCard(
-                    change.trelloCardId,
-                    change.date,
-                    change.item,
-                    change.notesResourceLinks,
-                    change.status,
-                    change.nextSteps,
-                    change.pointPerson
+                    task.trelloCardId,
+                    task.date,
+                    task.item,
+                    task.notesResourceLinks,
+                    task.status,
+                    task.nextSteps,
+                    task.pointPerson
                 );
                 console.log('Update result:', updated);
-            } else if (change.state === 'deleted') {
-                console.log('Archiving card in Trello:', change.item);
-                if (!change.trelloCardId || change.trelloCardId.trim() === '') {
-                    console.log('Cannot archive card - no Trello card ID found for:', change.item);
+            } else if (task.state === 'deleted') {
+                console.log('Archiving card in Trello:', task.item);
+                if (!task.trelloCardId || task.trelloCardId.trim() === '') {
+                    console.log('Cannot archive card - no Trello card ID found for:', task.item);
                     continue;
                 }
                 const archived = await trelloDatasource.trelloDatasource.archiveCard(
-                    change.trelloCardId
+                    task.trelloCardId
                 );
                 console.log('Archive result:', archived);
             }
@@ -133,10 +133,9 @@ class TrelloGDriveSyncController {
             const oldRow = oldDataMap.get(newRow.item);
 
             if (!oldRow) {
-                // Only mark as new if it doesn't have a trelloCardId
-                if (!newRow.trelloCardId || newRow.trelloCardId.trim() === '') {
-                    changes.push({ ...newRow, state: 'new' });
-                }
+                // Mark as new regardless of trelloCardId
+                // If it has a cardId but not in oldData, it's likely a copy-paste scenario
+                changes.push({ ...newRow, state: 'new' });
             } else {
                 // Check if any field changed
                 const hasChanges = fieldsToCompare.some(field => {
