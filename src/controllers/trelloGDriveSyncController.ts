@@ -86,6 +86,16 @@ class TrelloGDriveSyncController {
                     change.pointPerson
                 );
                 console.log('Update result:', updated);
+            } else if (change.state === 'deleted') {
+                console.log('Archiving card in Trello:', change.item);
+                if (!change.trelloCardId || change.trelloCardId.trim() === '') {
+                    console.log('Cannot archive card - no Trello card ID found for:', change.item);
+                    continue;
+                }
+                const archived = await trelloDatasource.trelloDatasource.archiveCard(
+                    change.trelloCardId
+                );
+                console.log('Archive result:', archived);
             }
         }
     }
@@ -123,15 +133,17 @@ class TrelloGDriveSyncController {
             const oldRow = oldDataMap.get(newRow.item);
 
             if (!oldRow) {
-                // New item
-                changes.push({ ...newRow, state: 'new' });
+                // Only mark as new if it doesn't have a trelloCardId
+                if (!newRow.trelloCardId || newRow.trelloCardId.trim() === '') {
+                    changes.push({ ...newRow, state: 'new' });
+                }
             } else {
                 // Check if any field changed
                 const hasChanges = fieldsToCompare.some(field => {
                     return newRow[field] !== oldRow[field];
                 });
 
-                if (hasChanges) {
+                if (hasChanges && newRow.trelloCardId && newRow.trelloCardId.trim() !== '') {
                     changes.push({ ...newRow, state: 'updated' });
                 }
 

@@ -112,6 +112,33 @@ class TrelloDatasource {
         return false;
     }
   }
+
+  async archiveCard(cardId: string) {
+    try {
+        const response = await fetch(
+            `https://api.trello.com/1/cards/${cardId}?key=${process.env.TRELLO_API_KEY}&token=${process.env.TRELLO_TOKEN}`,
+            {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    closed: true,
+                }),
+            }
+        );
+
+        if (!response.ok) {
+            console.error('Failed to archive Trello card:', await response.text());
+            return false;
+        }
+
+        return true;
+    } catch (error) {
+        console.error('Error archiving Trello card:', error);
+        return false;
+    }
+  }
 }
 
 export const trelloDatasource = new TrelloDatasource();
