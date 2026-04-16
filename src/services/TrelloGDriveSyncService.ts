@@ -1,6 +1,6 @@
 import { trelloGDriveSyncController } from "../controllers/trelloGDriveSyncController.js";
 
-const SYNC_INTERVAL = 10; // 1 minute in seconds
+const SYNC_INTERVAL = 60; // 1 minute in seconds
 
 class TrelloGDriveSyncService {
   private running = false;
