@@ -70,6 +70,22 @@ class TrelloGDriveSyncController {
                 } else {
                     console.log('No card ID returned from Trello');
                 }
+            } else if (change.state === 'updated') {
+                console.log('Updating card in Trello:', change.item, 'Status:', change.status);
+                if (!change.trelloCardId || change.trelloCardId.trim() === '') {
+                    console.log('Cannot update card - no Trello card ID found for:', change.item);
+                    continue;
+                }
+                const updated = await trelloDatasource.trelloDatasource.updateCard(
+                    change.trelloCardId,
+                    change.date,
+                    change.item,
+                    change.notesResourceLinks,
+                    change.status,
+                    change.nextSteps,
+                    change.pointPerson
+                );
+                console.log('Update result:', updated);
             }
         }
     }
