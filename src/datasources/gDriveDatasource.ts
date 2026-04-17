@@ -10,12 +10,25 @@ class GDriveDatasource{
 
     constructor() {}
 
+    private getPrivateKey(): string {
+        const key = process.env.GOOGLE_PRIVATE_KEY;
+        if (!key) {
+            throw new Error('GOOGLE_PRIVATE_KEY is not set');
+        }
+        // Only replace \\n with \n if the key contains \\n (escaped newlines)
+        // If multiline=true in Coolify, the key already has real newlines
+        if (key.includes('\\n')) {
+            return key.replace(/\\n/g, '\n');
+        }
+        return key;
+    }
+
     async readFile() {
         try {
             const auth = new google.auth.GoogleAuth({
                 credentials: {
                 client_email: process.env.GOOGLE_CLIENT_EMAIL,
-                private_key: process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, "\n"),
+                private_key: this.getPrivateKey(),
                 },
                 scopes: ["https://www.googleapis.com/auth/spreadsheets"],
             });
@@ -39,7 +52,7 @@ class GDriveDatasource{
             const auth = new google.auth.GoogleAuth({
                 credentials: {
                     client_email: process.env.GOOGLE_CLIENT_EMAIL,
-                    private_key: process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, "\n"),
+                    private_key: this.getPrivateKey(),
                 },
                 scopes: ["https://www.googleapis.com/auth/spreadsheets"],
             });
@@ -101,7 +114,7 @@ class GDriveDatasource{
             const auth = new google.auth.GoogleAuth({
                 credentials: {
                     client_email: process.env.GOOGLE_CLIENT_EMAIL,
-                    private_key: process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, "\n"),
+                    private_key: this.getPrivateKey(),
                 },
                 scopes: ["https://www.googleapis.com/auth/spreadsheets"],
             });
@@ -162,7 +175,7 @@ class GDriveDatasource{
             const auth = new google.auth.GoogleAuth({
                 credentials: {
                     client_email: process.env.GOOGLE_CLIENT_EMAIL,
-                    private_key: process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, "\n"),
+                    private_key: this.getPrivateKey(),
                 },
                 scopes: ["https://www.googleapis.com/auth/spreadsheets"],
             });
@@ -229,7 +242,7 @@ class GDriveDatasource{
             const auth = new google.auth.GoogleAuth({
                 credentials: {
                     client_email: process.env.GOOGLE_CLIENT_EMAIL,
-                    private_key: process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, "\n"),
+                    private_key: this.getPrivateKey(),
                 },
                 scopes: ["https://www.googleapis.com/auth/spreadsheets"],
             });
