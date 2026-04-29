@@ -25,6 +25,10 @@ class TrelloGDriveSyncController {
     }
 
     async syncGdriveWithTrello() {
+        // Clear tracking sets at the start of each sync cycle
+        this.archivedCardIds.clear();
+        this.movedToDoneCardIds.clear();
+
         const gDriveChanges = await this.getGDriveData();
         await this.addOrUpdateTrelloCards(gDriveChanges);
 
@@ -53,15 +57,14 @@ class TrelloGDriveSyncController {
     }
 
     private async syncTrelloToGDrive(trelloCards: any[]) {
-        // Read fresh Google Sheet data
-        const sheetDataRaw = await gDriveDatasource.readFile();
-        const sheetData = this.mapSheetData(sheetDataRaw);
+        // Use the snapshot from beginning of sync cycle to detect conflicts
+        const initialSheetData = this.oldGDriveData;
 
-        // Create a map of sheet rows by trelloCardId
-        const sheetByCardId = new Map<string, TaskRow>();
-        sheetData.forEach(row => {
+        // Create a map of initial sheet rows by trelloCardId
+        const initialSheetByCardId = new Map<string, TaskRow>();
+        initialSheetData.forEach(row => {
             if (row.trelloCardId && row.trelloCardId.trim() !== '') {
-                sheetByCardId.set(row.trelloCardId, row);
+                initialSheetByCardId.set(row.trelloCardId, row);
             }
         });
 
@@ -70,29 +73,39 @@ class TrelloGDriveSyncController {
 
         // Process each Trello card
         for (const card of trelloCards) {
-            const sheetRow = sheetByCardId.get(card.id);
+            const initialSheetRow = initialSheetByCardId.get(card.id);
 
-            if (sheetRow) {
+            if (initialSheetRow) {
                 // Check if any field changed (only update item and status)
                 const statusLowerCase = card.status.toLowerCase();
                 const hasChanges =
-                    sheetRow.item !== card.name ||
-                    sheetRow.status !== statusLowerCase;
+                    initialSheetRow.item !== card.name ||
+                    initialSheetRow.status !== statusLowerCase;
 
                 if (hasChanges) {
                     console.log(`Updating Google Sheet row for card: ${card.name}`);
+                    // Pass expected current state for conflict detection
                     await gDriveDatasource.updateRowByCardId(
                         card.id,
-                        sheetRow.date, // Keep existing date
+                        initialSheetRow.date,
                         card.name,
-                        sheetRow.notesResourceLinks, // Keep existing notesResourceLinks
-                        sheetRow.pointPerson, // Keep existing pointPerson
+                        initialSheetRow.notesResourceLinks,
+                        initialSheetRow.pointPerson,
                         statusLowerCase,
-                        sheetRow.nextSteps // Keep existing nextSteps
+                        initialSheetRow.nextSteps,
+                        // Expected state (what we think the row currently contains)
+                        {
+                            date: initialSheetRow.date,
+                            item: initialSheetRow.item,
+                            notesResourceLinks: initialSheetRow.notesResourceLinks,
+                            pointPerson: initialSheetRow.pointPerson,
+                            status: initialSheetRow.status,
+                            nextSteps: initialSheetRow.nextSteps
+                        }
                     );
                 }
                 // Mark this card as processed
-                sheetByCardId.delete(card.id);
+                initialSheetByCardId.delete(card.id);
             } else {
                 // Add new row to Google Sheet - assign to Jeldrik
                 console.log(`Adding new row to Google Sheet for card: ${card.name}`);
@@ -109,13 +122,30 @@ class TrelloGDriveSyncController {
         }
 
         // Delete rows from Google Sheet for cards that are no longer in Trello (moved to Backlog/Archive or archived)
-        for (const [cardId, sheetRow] of sheetByCardId) {
+        // BUT: skip cards that we just archived or moved to Done - keep those rows
+        for (const [cardId, sheetRow] of initialSheetByCardId) {
             if (!trelloCardIds.has(cardId)) {
+                // Skip deletion if we archived this card due to cancelled/invalid status
+                if (this.archivedCardIds.has(cardId)) {
+                    console.log(`Skipping deletion of Google Sheet row for archived card (user set to cancelled/invalid status): ${sheetRow.item}`);
+                    continue;
+                }
+
+                // Skip deletion if we moved this card to Done
+                if (this.movedToDoneCardIds.has(cardId)) {
+                    console.log(`Skipping deletion of Google Sheet row for card moved to Done: ${sheetRow.item}`);
+                    continue;
+                }
+
                 console.log(`Deleting Google Sheet row for card that was archived/moved to Backlog: ${sheetRow.item}`);
-                await gDriveDatasource.deleteRowByCardId(cardId);
+                // Pass expected status for conflict detection
+                await gDriveDatasource.deleteRowByCardId(cardId, sheetRow.status);
             }
         }
     }
+
+    private archivedCardIds = new Set<string>();
+    private movedToDoneCardIds = new Set<string>();
 
     private async addOrUpdateTrelloCards(tasks: TaskRow[]) {
         for (const task of tasks) {
@@ -144,21 +174,51 @@ class TrelloGDriveSyncController {
                     console.log('No card ID returned from Trello');
                 }
             } else if (task.state === 'updated') {
-                console.log('Updating card in Trello:', task.item, 'Status:', task.status);
                 if (!task.trelloCardId || task.trelloCardId.trim() === '') {
                     console.log('Cannot update card - no Trello card ID found for:', task.item);
                     continue;
                 }
-                const updated = await trelloDatasource.updateCard(
-                    task.trelloCardId,
-                    task.date,
-                    task.item,
-                    task.notesResourceLinks,
-                    task.status,
-                    task.nextSteps,
-                    task.pointPerson
-                );
-                console.log('Update result:', updated);
+
+                // Check if status is 'done' - move to Done list
+                if (task.status === 'done') {
+                    console.log('Moving card to Done list in Trello:', task.item);
+                    const updated = await trelloDatasource.updateCard(
+                        task.trelloCardId,
+                        task.date,
+                        task.item,
+                        task.notesResourceLinks,
+                        'done',
+                        task.nextSteps,
+                        task.pointPerson
+                    );
+                    console.log('Move to Done result:', updated);
+                    // Track cards moved to Done so we don't delete their rows from Google Sheet
+                    if (updated) {
+                        this.movedToDoneCardIds.add(task.trelloCardId);
+                    }
+                } else {
+                    // Try to update card with the status
+                    console.log('Updating card in Trello:', task.item, 'Status:', task.status);
+                    const updated = await trelloDatasource.updateCard(
+                        task.trelloCardId,
+                        task.date,
+                        task.item,
+                        task.notesResourceLinks,
+                        task.status,
+                        task.nextSteps,
+                        task.pointPerson
+                    );
+
+                    // If update failed, it might be because the status doesn't exist in Trello
+                    // In that case, archive the card (e.g., for 'cancelled' status)
+                    if (!updated) {
+                        console.log(`Status "${task.status}" not found in Trello, archiving card:`, task.item);
+                        await trelloDatasource.archiveCard(task.trelloCardId);
+                        this.archivedCardIds.add(task.trelloCardId);
+                    }
+
+                    console.log('Update result:', updated);
+                }
             } else if (task.state === 'deleted') {
                 console.log('Archiving card in Trello:', task.item);
                 if (!task.trelloCardId || task.trelloCardId.trim() === '') {
@@ -169,6 +229,7 @@ class TrelloGDriveSyncController {
                     task.trelloCardId
                 );
                 console.log('Archive result:', archived);
+                this.archivedCardIds.add(task.trelloCardId);
             }
         }
     }
@@ -181,10 +242,27 @@ class TrelloGDriveSyncController {
             const changes = this.compareGDriveData(this.oldGDriveData, mappedData);
             this.oldGDriveData = mappedData;
             console.log('Google Drive data changes:', changes);
+
+            // Track any rows with "done" status that have a trelloCardId
+            // These should not be deleted from Google Sheet
+            mappedData.forEach(row => {
+                if (row.status === 'done' && row.trelloCardId && row.trelloCardId.trim() !== '') {
+                    this.movedToDoneCardIds.add(row.trelloCardId);
+                }
+            });
+
             return changes;
         }
 
         this.oldGDriveData = mappedData;
+
+        // Track any existing rows with "done" status
+        mappedData.forEach(row => {
+            if (row.status === 'done' && row.trelloCardId && row.trelloCardId.trim() !== '') {
+                this.movedToDoneCardIds.add(row.trelloCardId);
+            }
+        });
+
         return mappedData
             .filter(row => row.status !== "done" && (!row.trelloCardId || row.trelloCardId.trim() === ''))
             .map(row => ({ ...row, state: 'new' as const }));
