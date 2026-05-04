@@ -259,6 +259,54 @@ class VideoViewsOutlierDatasource {
         }
     }
     /**
+     * Calculates video performance as the ratio of views in the last 24 hours to the p20-logarithmic average views in the last 24 hours for the channel, and similarly for shorts. 
+     * This allows us to identify videos that are outperforming or underperforming compared to the channel's typical performance. Videos with a performance ratio significantly above 1 are considered strong performers, while those significantly below 1 may be underperforming. The method updates the video_performance field for videos and shorts that have valid views data and a corresponding median for their channel.
+     */
+    async calculateVideoPerformance() {
+        const client = await this.pool.connect();
+        try{
+            await client.query('BEGIN');
+            const channelsQuery = `SELECT DISTINCT channel_id, average_views_last_24h, average_short_views_last_24h FROM channels`;
+            const channelsResult = await client.query(channelsQuery);
+            const channels = channelsResult.rows;
+
+            for (const channel of channels) {
+                const { channel_id, average_views_last_24h, average_short_views_last_24h } = channel;
+                //update video performances
+                if (average_views_last_24h === 0) {
+                    continue; // Skip if we don't have enough data to calculate performance
+                }
+                const performanceQuery = `UPDATE videos
+                SET video_performance = views_last_24h_sum::double precision / $1 
+                WHERE channel_id = $2
+                AND views_last_24h_sum IS NOT NULL
+                AND views_last_24h_sum > 0`;
+                await client.query(performanceQuery, [average_views_last_24h, channel_id]);
+                //update short video performances
+                if (average_short_views_last_24h === 0) {
+                    continue; // Skip if we don't have enough data to calculate performance
+                }
+                const shortPerformanceQuery = `UPDATE shorts
+                SET video_performance = views_last_24h::double precision / $1 
+                WHERE channel_id = $2
+                AND views_last_24h IS NOT NULL
+                AND views_last_24h > 0`;
+                await client.query(shortPerformanceQuery, [average_short_views_last_24h, channel_id]);
+            }
+            await client.query('COMMIT');
+        }
+        catch (error) {
+            await client.query('ROLLBACK');
+            console.error('Error calculating video performance:', error);
+            throw error;
+        }
+        finally {
+            client.release();
+
+        }
+    }
+
+    /**
      * Sets up a listener for changes to project settings in the database. When a change is detected, it triggers a reload of the project settings in the application.
      */
     private async listenToDbChanges(){

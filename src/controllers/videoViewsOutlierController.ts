@@ -18,6 +18,7 @@ class VideoViewsOutlierController {
         try{
             await videoViewsOutlierDatasource.setVideoTrajectory();
             await videoViewsOutlierDatasource.setGrowthFactor();
+            await videoViewsOutlierDatasource.calculateVideoPerformance();
         }
         catch (error) {
             console.error('Error calculating and storing video trajectory and growth factor:', error);
