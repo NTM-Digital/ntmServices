@@ -339,18 +339,35 @@ class VideoViewsOutlierDatasource {
     }
 
     private async getChannelsForProject(projectId: string): Promise<string[]> {
-        const client = await this.pool.connect();
-        try {
-            const query = `SELECT channel_id FROM project_channel_junction WHERE project_id = $1`;
-            const result = await client.query(query, [projectId]);
-            return result.rows.map(row => row.channel_id);
-        } catch (error) {
-            console.error('Error fetching channels for project:', error);
-            throw error;
-        } finally {
-            client.release();
-        }
+    const client = await this.pool.connect();
+
+    try {
+        const query = `
+            SELECT DISTINCT channel_id
+            FROM (
+                SELECT pcj.channel_id
+                FROM project_channel_junction pcj
+                WHERE pcj.project_id = $1
+
+                UNION
+
+                SELECT cpcj.channel_id
+                FROM child_projects cp
+                INNER JOIN child_project_channel_junction cpcj
+                    ON cpcj.child_project_id = cp.id
+                WHERE cp.parent_project_id = $1
+            ) channels
+        `;
+
+        const result = await client.query(query, [projectId]);
+        return result.rows.map(row => row.channel_id);
+    } catch (error) {
+        console.error('Error fetching channels for project and child projects:', error);
+        throw error;
+    } finally {
+        client.release();
     }
+}
 
 }
 export const videoViewsOutlierDatasource = new VideoViewsOutlierDatasource();
