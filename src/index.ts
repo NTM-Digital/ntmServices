@@ -3,6 +3,7 @@ import { databasesSyncService } from './services/databasesSyncService.js';
 import { ntmDataFileCleanUpService } from './services/ntmDataFileCleanUpService.js';
 import { videoViewsOutlierService } from './services/videoViewsOutlierService.js';
 import { trelloGDriveSyncService } from './services/TrelloGDriveSyncService.js';
+import { thumbnailsService } from './services/thumbnailsService.js';
 
 // Start all services
 export async function startServices() {
@@ -15,6 +16,7 @@ export async function startServices() {
         ntmDataFileCleanUpService.startSync(),
         videoViewsOutlierService.startSync(),
         trelloGDriveSyncService.startSync(),
+        thumbnailsService.startSync(),
     ]);
 
     console.log('All services started.');

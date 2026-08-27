@@ -419,6 +419,41 @@ class GDriveDatasource{
         }
     }
 
+    // Downloads the raw bytes of a Drive file. The service account needs read access to the file,
+    // so thumbnail files have to be shared with GOOGLE_CLIENT_EMAIL.
+    async downloadFile(fileId: string): Promise<{ data: Buffer, mimeType: string }> {
+        const auth = new google.auth.GoogleAuth({
+            credentials: {
+                client_email: process.env.GOOGLE_CLIENT_EMAIL,
+                private_key: this.getPrivateKey(),
+            },
+            scopes: ["https://www.googleapis.com/auth/drive.readonly"],
+        });
+
+        const drive = google.drive({ version: "v3", auth });
+
+        try {
+            // Thumbnails live on shared drives, which files.get hides behind supportsAllDrives.
+            const metadata = await drive.files.get({ fileId, fields: "mimeType", supportsAllDrives: true });
+            const mimeType = metadata.data.mimeType ?? "image/jpeg";
+
+            const file = await drive.files.get(
+                { fileId, alt: "media", supportsAllDrives: true },
+                { responseType: "arraybuffer" },
+            );
+
+            return { data: Buffer.from(file.data as ArrayBuffer), mimeType };
+        } catch (error: any) {
+            // Drive answers 404 rather than 403 for files the caller may not see, so a "not found"
+            // here almost always means the file has not been shared with the service account.
+            if (error?.code === 404) {
+                throw new Error(`Drive file ${fileId} is not visible to ${process.env.GOOGLE_CLIENT_EMAIL}. `
+                    + `Share the drive it lives on with that service account.`);
+            }
+            throw error;
+        }
+    }
+
 }
 
 export const gDriveDatasource = new GDriveDatasource();
