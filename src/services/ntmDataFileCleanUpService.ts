@@ -1,3 +1,4 @@
+import { getEnv } from '../lib/env.js';
 
 const SYNC_INTERVAL = 24 * 60 * 60; // 24 hours in seconds
 
@@ -20,7 +21,7 @@ class NtmDataFileCleanUpService {
       await fetch('https://data.ntmbase.com/api/media/cleanup', {
         method: 'GET',
         headers: {
-          'x-api-key': process.env.NTM_DATA_PROTECTED_API_ENDPOINT_KEY!
+          'x-api-key': await getEnv.NTM_DATA_PROTECTED_API_ENDPOINT_KEY()
         }
       });
       console.log("Ntm data file clean up completed.");

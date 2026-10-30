@@ -1,12 +1,13 @@
   import pg  from 'pg';
-  import dotenv from 'dotenv';
-
-  if (process.env.NODE_ENV !== 'production') {
-    dotenv.config();
-  }
+  import { NTM_DATA_DATABASE_URL } from '../lib/env.js';
 
   const pool = new pg.Pool({
-    connectionString: process.env.NTM_DATA_DATABASE_URL
+    connectionString: NTM_DATA_DATABASE_URL,
+    // Every service in this process shares this pool. pg defaults to 10, which the
+    // description backfill can saturate on its own once it is running several videos
+    // in parallel — and a saturated pool makes the other services queue rather than
+    // fail, which is hard to spot. The headroom keeps them independent.
+    max: 20
   });
 
   export interface VideoWithoutCreator {
@@ -301,6 +302,179 @@
     } catch (error) {
         await client.query('ROLLBACK');
         console.error('Error setting thumbnail as published:', error);
+        throw error;
+    } finally {
+        client.release();
+    }
+  }
+
+  export interface VideoDescriptionSegment {
+    title: string;
+    segment_type: string;
+    description: string;
+    key_topics: string[];
+    // Whole seconds from the start of the video. The prompt keeps playback
+    // positions out of the prose so the embedded text stays clean, and asks for
+    // them here instead.
+    start_time?: number | null;
+    // One analysis call produces every segment of a video, so its cost is split
+    // evenly across them. That keeps SUM(estimated_cost) equal to what was
+    // actually spent, whether summed per video or across the whole table.
+    estimated_cost?: number | null;
+  }
+
+  // Replaces a video's description segments. video_description has no uniqueness
+  // on video_id, so without the delete a re-run would quietly leave a second set
+  // of segments sitting alongside the first.
+  export const setVideoDescriptionSegments = async (videoId: string, segments: VideoDescriptionSegment[]): Promise<void> => {
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        await client.query('DELETE FROM video_description WHERE video_id = $1', [videoId]);
+
+        if (segments.length > 0) {
+          const COLUMNS_PER_ROW = 7;
+          const values: unknown[] = [];
+          const rows = segments.map((segment, index) => {
+            const offset = index * COLUMNS_PER_ROW;
+            values.push(
+              segment.title,
+              segment.segment_type,
+              segment.start_time ?? null,
+              segment.description,
+              // key_topics is a text column rather than text[], so the list is stored comma separated.
+              segment.key_topics.join(', '),
+              videoId,
+              segment.estimated_cost ?? null,
+            );
+            return `(${Array.from({ length: COLUMNS_PER_ROW }, (_, i) => `$${offset + i + 1}`).join(', ')})`;
+          });
+
+          // id is GENERATED ALWAYS AS IDENTITY, so it is left out of the column list.
+          const query = `INSERT INTO video_description (title, segment_type, start_time, description, key_topics, video_id, estimated_cost)
+                         VALUES ${rows.join(', ')}`;
+          await client.query(query, values);
+        }
+
+        await client.query('COMMIT');
+    } catch (error) {
+        await client.query('ROLLBACK');
+        console.error('Error setting video description segments:', error);
+        throw error;
+    } finally {
+        client.release();
+    }
+  }
+
+  // segment_type of the marker row written for a video that cannot be described.
+  // Every consumer reading descriptions to embed them must exclude this value.
+  export const FAILED_SEGMENT_TYPE = 'Failed';
+
+  export interface VideoToDescribe {
+    video_id: string;
+    // Null only for the two rows in the whole table whose duration is not numeric.
+    duration_seconds: number | null;
+    publish_date: Date | null;
+    channel_title: string | null;
+  }
+
+  // Newest videos in a project that have no video_description rows yet. A video that
+  // failed permanently has a marker row, so it is excluded here too and will not be
+  // retried until the marker is cleared.
+  //
+  // `publishedSinceHours` narrows this to recent uploads for the daily job; left out,
+  // it walks the whole back catalogue for the backfill. Note the window is on
+  // publish_date, because the videos table records no date on which a row was added —
+  // so a channel newly joined to a project brings a back catalogue the daily job will
+  // never see. The backfill is what picks those up.
+  export const findVideosWithoutDescriptions = async (
+    projectName: string,
+    limit: number,
+    options: { maxDurationSeconds?: number; publishedSinceHours?: number } = {},
+  ): Promise<VideoToDescribe[]> => {
+    const { maxDurationSeconds = 3600, publishedSinceHours } = options;
+    const client = await pool.connect();
+    try {
+        // videos.duration_seconds is not populated; videos.duration holds whole
+        // seconds as a varchar. The CASE guards the cast rather than relying on a
+        // regex in the WHERE clause, because Postgres does not promise to evaluate
+        // predicates in written order and two rows are not numeric.
+        const query = `SELECT v.video_id,
+                              (CASE WHEN v.duration ~ '^[0-9]+$' THEN v.duration::int END) AS duration_seconds,
+                              v.publish_date,
+                              c.title AS channel_title
+                       FROM videos v
+                       JOIN project_channel_junction pcj ON pcj.channel_id = v.channel_id
+                       JOIN projects p ON p.id = pcj.project_id
+                       LEFT JOIN channels c ON c.channel_id = v.channel_id
+                       WHERE lower(p.name) = lower($1)
+                         AND (CASE WHEN v.duration ~ '^[0-9]+$' THEN v.duration::int END) < $3
+                         AND ($4::int IS NULL OR v.publish_date >= now() - make_interval(hours => $4::int))
+                         AND NOT EXISTS (SELECT 1 FROM video_description d WHERE d.video_id = v.video_id)
+                       ORDER BY v.publish_date DESC NULLS LAST
+                       LIMIT $2`;
+        const result = await client.query(query, [projectName, limit, maxDurationSeconds, publishedSinceHours ?? null]);
+        return result.rows;
+    } catch (error) {
+        console.error('Error finding videos without descriptions:', error);
+        throw error;
+    } finally {
+        client.release();
+    }
+  }
+
+  // Whole seconds of runtime, or null when the stored value is not numeric. Used to
+  // tell the describing model how long the video is, since left to itself it will
+  // sometimes place a segment past the end.
+  export const getVideoDurationSeconds = async (videoId: string): Promise<number | null> => {
+    const client = await pool.connect();
+    try {
+        const query = `SELECT (CASE WHEN duration ~ '^[0-9]+$' THEN duration::int END) AS duration_seconds
+                       FROM videos WHERE video_id = $1`;
+        const result = await client.query(query, [videoId]);
+        return result.rows[0]?.duration_seconds ?? null;
+    } catch (error) {
+        console.error('Error getting video duration:', error);
+        throw error;
+    } finally {
+        client.release();
+    }
+  }
+
+  // Records a video that cannot be described, so later runs skip it instead of paying
+  // for the same failure again. Only for errors that will not improve on a retry —
+  // see the caller, which leaves rate limits and timeouts unmarked.
+  export const markVideoDescriptionFailed = async (
+    videoId: string,
+    reason: string,
+    estimatedCost?: number | null,
+  ): Promise<void> => {
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        await client.query('DELETE FROM video_description WHERE video_id = $1', [videoId]);
+        const query = `INSERT INTO video_description (title, segment_type, description, video_id, estimated_cost)
+                       VALUES (NULL, $1, $2, $3, $4)`;
+        await client.query(query, [FAILED_SEGMENT_TYPE, reason, videoId, estimatedCost ?? null]);
+        await client.query('COMMIT');
+    } catch (error) {
+        await client.query('ROLLBACK');
+        console.error('Error marking video description as failed:', error);
+        throw error;
+    } finally {
+        client.release();
+    }
+  }
+
+  // Drops every failure marker so those videos are picked up again. Returns how many
+  // were cleared.
+  export const clearVideoDescriptionFailures = async (): Promise<number> => {
+    const client = await pool.connect();
+    try {
+        const result = await client.query('DELETE FROM video_description WHERE segment_type = $1', [FAILED_SEGMENT_TYPE]);
+        return result.rowCount ?? 0;
+    } catch (error) {
+        console.error('Error clearing video description failures:', error);
         throw error;
     } finally {
         client.release();

@@ -1,12 +1,8 @@
   import pg  from 'pg';
-  import dotenv from 'dotenv';
-
-  if (process.env.NODE_ENV !== 'production') {
-    dotenv.config();
-  }
+  import { NTM_TASKS_DATABASE_URL } from '../lib/env.js';
 
   const pool = new pg.Pool({
-    connectionString: process.env.NTM_TASKS_DATABASE_URL
+    connectionString: NTM_TASKS_DATABASE_URL
   });
 
   export const findVideoCreatorsAndFilmingDatesForVideos = async (videoIds:string[]) => {

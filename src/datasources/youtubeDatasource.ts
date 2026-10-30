@@ -1,12 +1,7 @@
-import dotenv from 'dotenv';
 import { google } from "googleapis";
 import { Readable } from "node:stream";
 import { getYoutubeAuthParamsForChannel } from './ntmDataDatasource.js';
 import { gDriveDatasource } from './gDriveDatasource.js';
-
-if (process.env.NODE_ENV !== 'production') {
-  dotenv.config();
-}
 
 class YoutubeDatasource {
 

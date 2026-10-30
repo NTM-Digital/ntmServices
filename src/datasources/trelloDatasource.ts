@@ -1,16 +1,24 @@
- import dotenv from 'dotenv';
-
-  if (process.env.NODE_ENV !== 'production') {
-    dotenv.config();
-  }
+import { getEnv } from '../lib/env.js';
 
 class TrelloDatasource {
     constructor() {
     }
 
+    /**
+     * The `key=…&token=…` query fragment every Trello call needs. Resolved per
+     * call rather than held on the instance: the credential lookup behind it is
+     * cached with a TTL, so a token rotated in ntmbase lands without a restart —
+     * which only works if nothing here pins the old one.
+     */
+    private async authQuery(): Promise<string> {
+        const [key, token] = await Promise.all([getEnv.TRELLO_API_KEY(), getEnv.TRELLO_TOKEN()]);
+        return `key=${key}&token=${token}`;
+    }
+
     async fetchTrelloLists() {
         try {
-            const response = await fetch(`https://api.trello.com/1/boards/${process.env.TRELLO_NTM_BOARD_ID}/lists?key=${process.env.TRELLO_API_KEY}&token=${process.env.TRELLO_TOKEN}`);
+            const [boardId, auth] = await Promise.all([getEnv.TRELLO_NTM_BOARD_ID(), this.authQuery()]);
+            const response = await fetch(`https://api.trello.com/1/boards/${boardId}/lists?${auth}`);
             const data = await response.json();
             return data.map((list: any) => ({ id: list.id, name: list.name }));
         }
@@ -22,7 +30,8 @@ class TrelloDatasource {
 
   async getAllCards() {
     try {
-        const response = await fetch(`https://api.trello.com/1/boards/${process.env.TRELLO_NTM_BOARD_ID}/cards?key=${process.env.TRELLO_API_KEY}&token=${process.env.TRELLO_TOKEN}`);
+        const [boardId, auth] = await Promise.all([getEnv.TRELLO_NTM_BOARD_ID(), this.authQuery()]);
+        const response = await fetch(`https://api.trello.com/1/boards/${boardId}/cards?${auth}`);
         const data = await response.json();
         return data;
         }
@@ -48,7 +57,7 @@ class TrelloDatasource {
         const cardDescription = `**Date:** ${date}\n\n${assignedTo}**Notes/Resource Links:**\n${description}\n\n**Next Steps:**\n${comments}`;
 
         const response = await fetch(
-            `https://api.trello.com/1/cards?key=${process.env.TRELLO_API_KEY}&token=${process.env.TRELLO_TOKEN}`,
+            `https://api.trello.com/1/cards?${await this.authQuery()}`,
             {
                 method: 'POST',
                 headers: {
@@ -87,7 +96,7 @@ class TrelloDatasource {
 
         // Update card name, description, and list (status)
         const response = await fetch(
-            `https://api.trello.com/1/cards/${cardId}?key=${process.env.TRELLO_API_KEY}&token=${process.env.TRELLO_TOKEN}`,
+            `https://api.trello.com/1/cards/${cardId}?${await this.authQuery()}`,
             {
                 method: 'PUT',
                 headers: {
@@ -116,7 +125,7 @@ class TrelloDatasource {
   async archiveCard(cardId: string) {
     try {
         const response = await fetch(
-            `https://api.trello.com/1/cards/${cardId}?key=${process.env.TRELLO_API_KEY}&token=${process.env.TRELLO_TOKEN}`,
+            `https://api.trello.com/1/cards/${cardId}?${await this.authQuery()}`,
             {
                 method: 'PUT',
                 headers: {

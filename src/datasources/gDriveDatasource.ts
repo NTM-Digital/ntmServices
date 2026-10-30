@@ -1,37 +1,46 @@
-import dotenv from 'dotenv';
 import { google } from "googleapis";
-
-  if (process.env.NODE_ENV !== 'production') {
-    dotenv.config();
-  }
+import { getEnv } from '../lib/env.js';
 
 class GDriveDatasource{
     private static fileId = "15AQzZUKytQC0G9wovZKIZ7xvmIqjkuJDbhNKg5Rf-vE";
 
     constructor() {}
 
-    private getPrivateKey(): string {
-        const key = process.env.GOOGLE_PRIVATE_KEY;
+    private async getPrivateKey(): Promise<string> {
+        const key = await getEnv.GOOGLE_PRIVATE_KEY();
         if (!key) {
             throw new Error('GOOGLE_PRIVATE_KEY is not set');
         }
         // Only replace \\n with \n if the key contains \\n (escaped newlines)
-        // If multiline=true in Coolify, the key already has real newlines
+        // If multiline=true in Coolify, the key already has real newlines.
+        // The credential table stores the value exactly as it appeared in .env,
+        // so a key written with literal backslash-n comes back that way too.
         if (key.includes('\\n')) {
             return key.replace(/\\n/g, '\n');
         }
         return key;
     }
 
+    /**
+     * Builds a service-account auth client for the given scopes. Constructed per
+     * call rather than cached: GoogleAuth costs microseconds to build against the
+     * credential lookup behind it, and a cached client would pin the old key past
+     * the config TTL, defeating rotation from ntmbase.
+     */
+    private async getAuth(scopes: string[]) {
+        const [client_email, private_key] = await Promise.all([
+            getEnv.GOOGLE_CLIENT_EMAIL(),
+            this.getPrivateKey(),
+        ]);
+        return new google.auth.GoogleAuth({
+            credentials: { client_email, private_key },
+            scopes,
+        });
+    }
+
     async readFile() {
         try {
-            const auth = new google.auth.GoogleAuth({
-                credentials: {
-                client_email: process.env.GOOGLE_CLIENT_EMAIL,
-                private_key: this.getPrivateKey(),
-                },
-                scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-            });
+            const auth = await this.getAuth(["https://www.googleapis.com/auth/spreadsheets"]);
 
             const sheets = google.sheets({ version: "v4", auth });
             const res = await sheets.spreadsheets.values.get({
@@ -49,13 +58,7 @@ class GDriveDatasource{
 
     async updateCardId(item: string, trelloCardId: string) {
         try {
-            const auth = new google.auth.GoogleAuth({
-                credentials: {
-                    client_email: process.env.GOOGLE_CLIENT_EMAIL,
-                    private_key: this.getPrivateKey(),
-                },
-                scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-            });
+            const auth = await this.getAuth(["https://www.googleapis.com/auth/spreadsheets"]);
 
             const sheets = google.sheets({ version: "v4", auth });
 
@@ -127,13 +130,7 @@ class GDriveDatasource{
         }
     ) {
         try {
-            const auth = new google.auth.GoogleAuth({
-                credentials: {
-                    client_email: process.env.GOOGLE_CLIENT_EMAIL,
-                    private_key: this.getPrivateKey(),
-                },
-                scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-            });
+            const auth = await this.getAuth(["https://www.googleapis.com/auth/spreadsheets"]);
 
             const sheets = google.sheets({ version: "v4", auth });
 
@@ -229,13 +226,7 @@ class GDriveDatasource{
 
     async deleteRowByCardId(trelloCardId: string, expectedStatus?: string) {
         try {
-            const auth = new google.auth.GoogleAuth({
-                credentials: {
-                    client_email: process.env.GOOGLE_CLIENT_EMAIL,
-                    private_key: this.getPrivateKey(),
-                },
-                scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-            });
+            const auth = await this.getAuth(["https://www.googleapis.com/auth/spreadsheets"]);
 
             const sheets = google.sheets({ version: "v4", auth });
 
@@ -310,13 +301,7 @@ class GDriveDatasource{
 
     async addRow(date: string, item: string, notesResourceLinks: string, pointPerson: string, status: string, nextSteps: string, trelloCardId: string) {
         try {
-            const auth = new google.auth.GoogleAuth({
-                credentials: {
-                    client_email: process.env.GOOGLE_CLIENT_EMAIL,
-                    private_key: this.getPrivateKey(),
-                },
-                scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-            });
+            const auth = await this.getAuth(["https://www.googleapis.com/auth/spreadsheets"]);
 
             const sheets = google.sheets({ version: "v4", auth });
 
@@ -422,13 +407,7 @@ class GDriveDatasource{
     // Downloads the raw bytes of a Drive file. The service account needs read access to the file,
     // so thumbnail files have to be shared with GOOGLE_CLIENT_EMAIL.
     async downloadFile(fileId: string): Promise<{ data: Buffer, mimeType: string }> {
-        const auth = new google.auth.GoogleAuth({
-            credentials: {
-                client_email: process.env.GOOGLE_CLIENT_EMAIL,
-                private_key: this.getPrivateKey(),
-            },
-            scopes: ["https://www.googleapis.com/auth/drive.readonly"],
-        });
+        const auth = await this.getAuth(["https://www.googleapis.com/auth/drive.readonly"]);
 
         const drive = google.drive({ version: "v3", auth });
 
@@ -447,7 +426,7 @@ class GDriveDatasource{
             // Drive answers 404 rather than 403 for files the caller may not see, so a "not found"
             // here almost always means the file has not been shared with the service account.
             if (error?.code === 404) {
-                throw new Error(`Drive file ${fileId} is not visible to ${process.env.GOOGLE_CLIENT_EMAIL}. `
+                throw new Error(`Drive file ${fileId} is not visible to ${await getEnv.GOOGLE_CLIENT_EMAIL()}. `
                     + `Share the drive it lives on with that service account.`);
             }
             throw error;

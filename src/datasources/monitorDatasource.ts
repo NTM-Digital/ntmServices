@@ -1,11 +1,5 @@
 import PG from 'pg';
-import dotenv from 'dotenv';
-
-// Load environment variables from .env file in development
-// In production (Coolify), environment variables are injected directly
-if (process.env.NODE_ENV !== 'production') {
-  dotenv.config();
-}
+import { POSTGRES_URL } from '../lib/env.js';
 
 interface CreateMonitorParams {
   name: string;
@@ -30,7 +24,7 @@ class MonitorDatasource {
 
   constructor() {
     this.pool = new PG.Pool({
-      connectionString: process.env.POSTGRES_URL
+      connectionString: POSTGRES_URL
     });
   }
 
@@ -275,7 +269,7 @@ class MonitorDatasource {
   async listenForMonitorChanges(callback: (payload: any) => void) {
     try {
       this.notificationClient = new PG.Client({
-        connectionString: process.env.POSTGRES_URL
+        connectionString: POSTGRES_URL
       });
 
       await this.notificationClient.connect();

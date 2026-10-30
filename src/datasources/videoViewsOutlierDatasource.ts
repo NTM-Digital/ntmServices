@@ -1,9 +1,5 @@
   import pg  from 'pg';
-  import dotenv from 'dotenv';
-
-  if (process.env.NODE_ENV !== 'production') {
-    dotenv.config();
-  }
+  import { NTM_DATA_DATABASE_URL } from '../lib/env.js';
 
   export interface ChannelMedianViews {
     channel_id: string;
@@ -18,7 +14,7 @@ class VideoViewsOutlierDatasource {
 
     constructor() {
         this.pool = new pg.Pool({
-            connectionString: process.env.NTM_DATA_DATABASE_URL
+            connectionString: NTM_DATA_DATABASE_URL
         });
         this.listenToDbChanges().catch(err => {
             console.error("Failed to set up database listener", err);
