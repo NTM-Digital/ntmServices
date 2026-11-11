@@ -1,6 +1,8 @@
 import { thumbnailsController } from "../controllers/thumbnailsController.js";
 
-const SYNC_INTERVAL = 2 * 60 * 60; // 2 hours in seconds
+// The rotation waits on a 15 minute publishing window, so it needs to be checked a good deal
+// more often than that for a thumbnail to be swapped out shortly after its window is up.
+const SYNC_INTERVAL = 5 * 60; // 5 minutes in seconds
 
 class ThumbnailsService {
   private running = false;

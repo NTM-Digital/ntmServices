@@ -194,6 +194,10 @@
     url: string;
     ctrs: ThumbnailCtrEntry[] | null;
     currently_published: boolean;
+    // When this thumbnail was last put live on youtube. NULL for rows published before the
+    // column existed. Only meaningful as "the current publication started then" while
+    // currently_published is true.
+    published_at: Date | null;
   }
 
   export const getThumbnailUrlsForVideo = async (videoId: string): Promise<string[]> => {
@@ -214,7 +218,12 @@
   export const getThumbnailsForVideo = async (videoId: string): Promise<Thumbnail[]> => {
     const client = await pool.connect();
     try {
-        const query = `SELECT id, video_id, url, ctrs, currently_published
+        // published_at is a `timestamp without time zone` holding utc, so node-pg would
+        // otherwise read it back as a local-time Date and shift the instant by the box's
+        // offset. The AT TIME ZONE cast makes it a timestamptz, which parses as the real
+        // instant no matter where this runs.
+        const query = `SELECT id, video_id, url, ctrs, currently_published,
+                              (published_at AT TIME ZONE 'UTC') AS published_at
                        FROM thumbnails
                        WHERE video_id = $1 AND url IS NOT NULL
                        ORDER BY id`;
@@ -289,14 +298,19 @@
     }
   }
 
-  // Marks one thumbnail as the published one and clears the flag on every other thumbnail of that video.
+  // Marks one thumbnail as the published one and clears the flag on every other thumbnail of that
+  // video. published_at starts the clock the rotation waits on, so it is stamped here and left
+  // untouched on the others, where it keeps reading as the last time they were live.
   export const setThumbnailAsPublished = async (thumbnailId:number, videoId:string): Promise<void> => {
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
         const query = `UPDATE thumbnails SET currently_published = false WHERE video_id = $1 AND id != $2`;
         await client.query(query, [videoId, thumbnailId]);
-        const query2 = `UPDATE thumbnails SET currently_published = true WHERE id = $1`;
+        // NOW() is a timestamptz; the cast stores it as utc to match how it is read back.
+        const query2 = `UPDATE thumbnails
+                        SET currently_published = true, published_at = (NOW() AT TIME ZONE 'UTC')
+                        WHERE id = $1`;
         await client.query(query2, [thumbnailId]);
         await client.query('COMMIT');
     } catch (error) {
