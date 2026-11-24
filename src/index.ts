@@ -6,6 +6,7 @@ import { trelloGDriveSyncService } from './services/TrelloGDriveSyncService.js';
 import { thumbnailsService } from './services/thumbnailsService.js';
 import { videoDescriptionService } from './services/videoDescriptionService.js';
 import { videoDescriptionBackfillService } from './services/videoDescriptionBackfillService.js';
+import { analyticsReportService } from './services/analyticsReportService.js';
 
 // Start all services
 export async function startServices() {
@@ -19,6 +20,7 @@ export async function startServices() {
         videoViewsOutlierService.startSync(),
         trelloGDriveSyncService.startSync(),
         thumbnailsService.startSync(),
+        analyticsReportService.startSync(),
         // videoDescriptionService.startSync(),
     ];
 

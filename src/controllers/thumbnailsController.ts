@@ -2,6 +2,7 @@ import { getOwnedVideosPublishedLast24Hours, getThumbnailUrlsForVideo, getThumbn
 import { getGDriveThumbnailIdsForVIdeo, VideoExtraInfo, JobInfo, ThumbnailInfo, ThumbnailRedo, VideoThumbnailSources } from '../datasources/ntmTasksDatasource.js';
 import { youtubeDatasource } from '../datasources/youtubeDatasource.js';
 import { discordController } from './discordController.js';
+import { isProduction } from '../lib/env.js';
 
 const GDRIVE_THUMBNAIL_SIZE = 'w1000';
 
@@ -271,10 +272,20 @@ class ThumbnailsController {
   /**
    * Sends one rotation notice as a discord dm. Notices are a side channel, so a discord outage
    * must not take the rotation down with it: this logs and carries on instead of throwing.
+   *
+   * Only production sends. `npm run dev` is `tsx watch`, so every file save restarts the
+   * process, and because each service works before it sleeps, every save triggers a full
+   * immediate pass - which would dm on every save that happens to land mid-rotation. In
+   * development the notice is logged instead, so nothing is lost while developing.
    */
   private async notify(lines: string[]) {
+    const message = lines.join('\n');
+    if (!isProduction) {
+      console.log(`[thumbnail notice, not sent outside production]\n${message}`);
+      return;
+    }
     try {
-      await discordController.messageUser(DISCORD_NOTIFY_USER_ID, lines.join('\n'));
+      await discordController.messageUser(DISCORD_NOTIFY_USER_ID, message);
     } catch (error) {
       console.error('Could not send the thumbnail rotation notice to discord:', error);
     }
