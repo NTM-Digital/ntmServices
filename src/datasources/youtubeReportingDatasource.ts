@@ -158,7 +158,7 @@ class YoutubeReportingDatasource {
   async listReports(
     ownedChannelId: number,
     jobId: string,
-    createdAfter?: Date,
+    options: { createdAfter?: Date; startTimeAtOrAfter?: Date } = {},
   ): Promise<ReportingReport[]> {
     const { reporting } = await this.reportingFor(ownedChannelId);
     const reports: ReportingReport[] = [];
@@ -166,8 +166,14 @@ class YoutubeReportingDatasource {
 
     do {
       const params: youtubereporting_v1.Params$Resource$Jobs$Reports$List = { jobId, pageToken };
-      if (createdAfter) {
-        params.createdAfter = createdAfter.toISOString();
+      if (options.createdAfter) {
+        params.createdAfter = options.createdAfter.toISOString();
+      }
+      // Filters on the data's own date rather than on when the report was created, which
+      // is what the trailing re-import needs: it wants the last N days of data whether or
+      // not those reports have been seen before.
+      if (options.startTimeAtOrAfter) {
+        params.startTimeAtOrAfter = options.startTimeAtOrAfter.toISOString();
       }
       const response = await reporting.jobs.reports.list(params);
       for (const report of response.data.reports ?? []) {

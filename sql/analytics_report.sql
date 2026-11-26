@@ -174,6 +174,9 @@ CREATE TABLE analytics_report_jobs (
     job_name          text,
     job_create_time   timestamptz,
     last_polled_at    timestamptz,
+    -- When this job last had its trailing window re-imported regardless of the ledger.
+    -- NULL means one is due. See TRAILING_REIMPORT_DAYS in analyticsReportController.ts.
+    last_trailing_reimport_at timestamptz,
 
     CONSTRAINT analytics_report_jobs_uc     UNIQUE (owned_channels_id, report_type_id),
     -- Two youtube_analytics_params rows sharing a refresh token would otherwise both

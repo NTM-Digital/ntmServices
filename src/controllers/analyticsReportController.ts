@@ -14,6 +14,7 @@ import {
   getImportCursor,
   ledgerSupersededReport,
   importAnalyticsReport,
+  markTrailingReimportDone,
   analyticsColumnsFor,
   type AnalyticsImportRow,
   type AnalyticsReportSource,
@@ -63,6 +64,23 @@ const MAX_REPORTS_PER_JOB_PER_RUN = 10;
 // back slightly past the cursor. Re-listing an already-imported report costs nothing,
 // because the ledger filters it out before anything is downloaded.
 const CURSOR_OVERLAP_MS = 60 * 60 * 1000;
+
+// How far back to re-import unconditionally, ignoring the ledger, and how often.
+//
+// This is the only thing that recovers a day whose rows were dropped because
+// owned_videos / owned_shorts had not caught up with youtube yet - a brand new upload,
+// or a whole channel the crawler has not synced. Those rows are skipped and counted, but
+// without this sweep the only way to get them back is deleting ledger rows by hand, and
+// reports vanish 60 days after youtube generates them. The import is idempotent, so
+// re-importing a day that was already correct costs a download and changes nothing.
+const TRAILING_REIMPORT_DAYS = 7;
+const TRAILING_REIMPORT_INTERVAL_MS = TRAILING_REIMPORT_DAYS * 24 * 60 * 60 * 1000;
+
+// A sweep is 7-ish reports per job, and a basic report for a large channel is tens of
+// thousands of rows - so letting all 30 jobs sweep in one pass would make that pass wildly
+// more expensive than every other. Spreading it over several passes keeps any single pass
+// predictable; with a 6 hour interval the whole estate is still swept well inside a day.
+const MAX_TRAILING_JOBS_PER_RUN = 4;
 
 // YouTube's analytics day runs midnight to midnight Pacific, so the day a report covers
 // has to be derived in that zone rather than in UTC.
@@ -174,16 +192,23 @@ class AnalyticsReportController {
     // Sequentially, one channel at a time. Concurrent transactions competing for the
     // same (video_id, date) conflict target deadlock, and the pg pool is shared with
     // every other service in this process.
+    // Shared across the whole pass so the trailing sweep is spread over several passes
+    // rather than all landing at once.
+    const trailingBudget = { remaining: MAX_TRAILING_JOBS_PER_RUN };
+
     for (const channel of channels) {
       try {
-        await this.importChannel(channel);
+        await this.importChannel(channel, trailingBudget);
       } catch (error) {
         await this.reportChannelFailure(channel, error);
       }
     }
   }
 
-  private async importChannel(channel: YoutubeAnalyticsParamsRow): Promise<void> {
+  private async importChannel(
+    channel: YoutubeAnalyticsParamsRow,
+    trailingBudget: { remaining: number },
+  ): Promise<void> {
     const ownedChannelId = channel.owned_channels_id;
     const label = `${channel.channel_name ?? 'unnamed'} (${ownedChannelId})`;
 
@@ -193,15 +218,79 @@ class AnalyticsReportController {
     ]);
 
     for (const reportType of REPORT_TYPES) {
-      const jobId = await this.ensureJob(ownedChannelId, reportType.id, label);
-      const reports = await this.pendingReports(ownedChannelId, jobId, reportType.id, label);
+      const job = await this.ensureJob(ownedChannelId, reportType.id, label);
+      const reports = await this.pendingReports(ownedChannelId, job.jobId, reportType.id, label);
 
       for (const report of reports) {
         await this.importOneReport({
-          channel, reportType, jobId, report, videoIds, shortIds, label,
+          channel, reportType, jobId: job.jobId, report, videoIds, shortIds, label,
         });
       }
+
+      // After the normal poll, never instead of it: forward progress must not be
+      // blocked by a sweep, and the sweep must not compete with it for the per-run cap.
+      await this.trailingReimport({
+        channel, reportType, job, videoIds, shortIds, label, trailingBudget,
+      });
     }
+  }
+
+  /**
+   * Re-imports the trailing window for one job, ignoring the ledger entirely, at most
+   * once every TRAILING_REIMPORT_DAYS.
+   *
+   * Bounded by the date window rather than by MAX_REPORTS_PER_JOB_PER_RUN: one report per
+   * day means the sweep is inherently about TRAILING_REIMPORT_DAYS reports, and keeping it
+   * out of the capped path preserves the rule that the cap only ever applies to reports
+   * not yet in the ledger.
+   */
+  private async trailingReimport(args: {
+    channel: YoutubeAnalyticsParamsRow;
+    reportType: { id: string; source: AnalyticsReportSource };
+    job: { jobId: string; lastTrailingReimportAt: Date | null };
+    videoIds: Map<string, number>;
+    shortIds: Map<string, number>;
+    label: string;
+    trailingBudget: { remaining: number };
+  }): Promise<void> {
+    const { channel, reportType, job, videoIds, shortIds, label, trailingBudget } = args;
+
+    const last = job.lastTrailingReimportAt;
+    const due = !last || Date.now() - last.getTime() >= TRAILING_REIMPORT_INTERVAL_MS;
+    if (!due || trailingBudget.remaining <= 0) {
+      return;
+    }
+    trailingBudget.remaining--;
+
+    const since = new Date(Date.now() - TRAILING_REIMPORT_DAYS * 24 * 60 * 60 * 1000);
+    const reports = await youtubeReportingDatasource.listReports(
+      channel.owned_channels_id, job.jobId, { startTimeAtOrAfter: since });
+
+    // Same replacement rule as the normal poll: where several reports cover one day, only
+    // the newest createTime is real.
+    const newest = this.newestPerDay(reports);
+    console.log(`${label}: trailing re-import of ${reportType.id}, ${newest.length} day(s) since ${since.toISOString().slice(0, 10)}.`);
+
+    for (const report of newest) {
+      await this.importOneReport({
+        channel, reportType, jobId: job.jobId, report, videoIds, shortIds, label,
+      });
+    }
+
+    // Only once the whole window is through, so an interrupted sweep runs again.
+    await markTrailingReimportDone(job.jobId);
+  }
+
+  /** Keeps, per report day, only the report with the newest createTime. */
+  private newestPerDay(reports: ReportingReport[]): ReportingReport[] {
+    const byDay = new Map<string, ReportingReport>();
+    for (const report of reports) {
+      const existing = byDay.get(report.startTime);
+      if (!existing || existing.createTime < report.createTime) {
+        byDay.set(report.startTime, report);
+      }
+    }
+    return [...byDay.values()].sort((a, b) => a.createTime.localeCompare(b.createTime));
   }
 
   /**
@@ -212,10 +301,14 @@ class AnalyticsReportController {
    * run created the job but failed before storing it, the jobs.list step adopts it
    * instead of creating a duplicate.
    */
-  private async ensureJob(ownedChannelId: number, reportTypeId: string, label: string): Promise<string> {
+  private async ensureJob(
+    ownedChannelId: number,
+    reportTypeId: string,
+    label: string,
+  ): Promise<{ jobId: string; lastTrailingReimportAt: Date | null }> {
     const stored = await getAnalyticsReportJob(ownedChannelId, reportTypeId);
     if (stored) {
-      return stored.job_id;
+      return { jobId: stored.job_id, lastTrailingReimportAt: stored.last_trailing_reimport_at ?? null };
     }
 
     const existing = (await youtubeReportingDatasource.listJobs(ownedChannelId))
@@ -241,7 +334,10 @@ class AnalyticsReportController {
       job_name: job.name,
       job_create_time: job.createTime ? new Date(job.createTime) : null,
     });
-    return job.id;
+    // A job this run just created has no history to sweep, but leaving the timestamp NULL
+    // costs only one listReports call on the next pass and keeps the "NULL means due"
+    // rule simple.
+    return { jobId: job.id, lastTrailingReimportAt: null };
   }
 
   /**
@@ -263,7 +359,7 @@ class AnalyticsReportController {
     ]);
     const createdAfter = cursor ? new Date(cursor.getTime() - CURSOR_OVERLAP_MS) : undefined;
 
-    const all = await youtubeReportingDatasource.listReports(ownedChannelId, jobId, createdAfter);
+    const all = await youtubeReportingDatasource.listReports(ownedChannelId, jobId, { createdAfter });
     await touchAnalyticsReportJobPolled(jobId);
 
     const fresh = all

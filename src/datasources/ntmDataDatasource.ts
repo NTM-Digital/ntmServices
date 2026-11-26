@@ -570,6 +570,8 @@
     job_id: string;
     job_name: string | null;
     job_create_time: Date | null;
+    // NULL means a trailing re-import is due for this job.
+    last_trailing_reimport_at?: Date | null;
   }
 
   export const getAnalyticsReportJob = async (
@@ -579,7 +581,8 @@
     const client = await pool.connect();
     try {
         const result = await client.query(
-          `SELECT owned_channels_id, report_type_id, job_id, job_name, job_create_time
+          `SELECT owned_channels_id, report_type_id, job_id, job_name, job_create_time,
+                  last_trailing_reimport_at
              FROM analytics_report_jobs
             WHERE owned_channels_id = $1 AND report_type_id = $2`,
           [ownedChannelsId, reportTypeId],
@@ -941,6 +944,24 @@
     } catch (error) {
         await client.query('ROLLBACK');
         console.error(`Error importing analytics report ${report.id} (${reportTypeId}, channel ${ownedChannelId}):`, error);
+        throw error;
+    } finally {
+        client.release();
+    }
+  }
+
+  // Records that this job's trailing window has just been re-imported. Written only after
+  // the whole window has been processed, so an interrupted sweep is retried rather than
+  // silently marked done.
+  export const markTrailingReimportDone = async (jobId: string): Promise<void> => {
+    const client = await pool.connect();
+    try {
+        await client.query(
+          `UPDATE analytics_report_jobs SET last_trailing_reimport_at = now() WHERE job_id = $1`,
+          [jobId],
+        );
+    } catch (error) {
+        console.error('Error marking the trailing re-import as done:', error);
         throw error;
     } finally {
         client.release();
