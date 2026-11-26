@@ -74,15 +74,36 @@ const REPORT_TIME_ZONE = 'America/Los_Angeles';
 // `sum` is exact: channel_basic_a3's dimensions (country_code x subscribed_status x
 // live_or_on_demand) partition the events, so every view falls in exactly one bucket.
 //
-// `viewsWeighted` is for the two averages. Summing an average is meaningless, and
-// deriving it as watch_time / views is biased, because watch_time_minutes is reported
+// `weighted` is for averages and rates. Summing an average is meaningless, and deriving
+// view duration as watch_time / views is biased, because watch_time_minutes is reported
 // per bucket at whole-minute granularity and a long-tail video's hundreds of tiny
-// buckets each round toward zero. The views-weighted mean keeps the API's own precision.
-// It is only valid within a single video, which holds because the fold key includes the
-// video id - do not reuse these values across videos.
-type AggregationMode = 'sum' | 'viewsWeighted';
+// buckets each round toward zero. A weighted mean keeps the API's own precision.
+//
+// `weightBy` names the CSV column to weight by, and it is NOT always `views`:
+// channel_reach_basic_a1 carries no views column at all, only
+// video_thumbnail_impressions and its ctr. Weighting a ctr by impressions is also simply
+// the right thing - a ctr is clicks over impressions. (That report's only dimensions are
+// date, channel_id and video_id, so it already has one row per video per day and the
+// fold is a pass-through for it; the weighting matters only if youtube ever widens it.)
+//
+// A weighted value is only valid within a single video, which holds because the fold key
+// includes the video id - do not reuse these values across videos.
+//
+// `scale` converts the API's units to this schema's. Verified against a real report:
+// video_thumbnail_impressions_ctr arrives as a RATIO (0.0819985 = 8.2%), while
+// average_view_duration_percentage already arrives as a percentage (91.6). The ratio is
+// scaled to a percentage so impressions_ctr matches the scale the rest of this codebase
+// compares against (CTR_THRESHOLD = 6.5 in thumbnailsController.ts).
+type AggregationMode = 'sum' | 'weighted';
 
-const COLUMN_AGGREGATION: Record<string, { column: string; mode: AggregationMode }> = {
+interface ColumnMapping {
+  column: string;
+  mode: AggregationMode;
+  weightBy?: string;
+  scale?: number;
+}
+
+const COLUMN_AGGREGATION: Record<string, ColumnMapping> = {
   views:                            { column: 'views', mode: 'sum' },
   engaged_views:                    { column: 'engaged_views', mode: 'sum' },
   watch_time_minutes:               { column: 'watch_time_minutes', mode: 'sum' },
@@ -96,10 +117,10 @@ const COLUMN_AGGREGATION: Record<string, { column: string; mode: AggregationMode
   subscribers_lost:                 { column: 'subscribers_lost', mode: 'sum' },
   red_views:                        { column: 'red_views', mode: 'sum' },
   red_watch_time_minutes:           { column: 'red_watch_time_minutes', mode: 'sum' },
-  average_view_duration_seconds:    { column: 'average_view_duration_seconds', mode: 'viewsWeighted' },
-  average_view_duration_percentage: { column: 'average_view_duration_percentage', mode: 'viewsWeighted' },
+  average_view_duration_seconds:    { column: 'average_view_duration_seconds', mode: 'weighted', weightBy: 'views' },
+  average_view_duration_percentage: { column: 'average_view_duration_percentage', mode: 'weighted', weightBy: 'views' },
   video_thumbnail_impressions:      { column: 'thumbnail_impressions', mode: 'sum' },
-  video_thumbnail_impressions_ctr:  { column: 'impressions_ctr', mode: 'viewsWeighted' },
+  video_thumbnail_impressions_ctr:  { column: 'impressions_ctr', mode: 'weighted', weightBy: 'video_thumbnail_impressions', scale: 100 },
 };
 
 // Columns deliberately ignored. They are rates, so summing them is wrong, and the card
@@ -133,6 +154,8 @@ interface ParseOutcome {
   // bucket that means something is wrong.
   unknownVideoIds: Set<string>;
   unmappedColumns: Set<string>;
+  // Weighted columns whose weight column this report does not carry.
+  missingWeights: Set<string>;
 }
 
 class AnalyticsReportController {
@@ -302,6 +325,9 @@ class AnalyticsReportController {
     const parsed = await this.parseReport(ownedChannelId, report);
     const rowsByTarget = this.routeRows(parsed, reportType.source, videoIds, shortIds, ownedChannelId);
 
+    if (parsed.missingWeights.size > 0) {
+      console.error(`${label}: ${reportType.id} report ${report.id} is missing the weight column for [${[...parsed.missingWeights].join(', ')}] - those columns will be NULL for every row. Fix COLUMN_AGGREGATION.`);
+    }
     if (parsed.unmappedColumns.size > 0) {
       console.warn(`${label}: ${reportType.id} report ${report.id} carried unmapped columns [${[...parsed.unmappedColumns].join(', ')}] - they were not imported.`);
     }
@@ -336,6 +362,7 @@ class AnalyticsReportController {
     const folded = new Map<string, FoldedRow>();
     const unknownVideoIds = new Set<string>();
     const unmappedColumns = new Set<string>();
+    const missingWeights = new Set<string>();
     let header: string[] | null = null;
 
     for await (const line of youtubeReportingDatasource.streamReportLines(ownedChannelId, report.downloadUrl)) {
@@ -346,6 +373,13 @@ class AnalyticsReportController {
         for (const column of header) {
           if (!DIMENSION_COLUMNS.has(column) && !COLUMN_AGGREGATION[column] && !IGNORED_COLUMNS.has(column)) {
             unmappedColumns.add(column);
+          }
+          // A weighted column whose weight is not in this report would silently divide
+          // by a zero weight and store NULL for every row. Catch it at the header rather
+          // than discovering it as a column of nulls in the database.
+          const mapping = COLUMN_AGGREGATION[column];
+          if (mapping?.mode === 'weighted' && !header.includes(mapping.weightBy ?? '')) {
+            missingWeights.add(`${column} (weightBy ${mapping.weightBy})`);
           }
         }
         continue;
@@ -371,31 +405,34 @@ class AnalyticsReportController {
         folded.set(key, row);
       }
 
-      // The weight for every views-weighted column, read before the loop so the order of
-      // columns in the CSV cannot matter.
-      const views = this.toNumber(valueAt('views')) ?? 0;
-
       for (const column of header) {
         const mapping = COLUMN_AGGREGATION[column];
         if (!mapping) continue;
-        const value = this.toNumber(valueAt(column));
-        if (value === null) continue;
+        const raw = this.toNumber(valueAt(column));
+        if (raw === null) continue;
+        const value = mapping.scale ? raw * mapping.scale : raw;
 
         if (mapping.mode === 'sum') {
           row.sums.set(mapping.column, (row.sums.get(mapping.column) ?? 0) + value);
-        } else {
-          const accumulator = row.weighted.get(mapping.column) ?? { total: 0, weight: 0 };
-          accumulator.total += value * views;
-          accumulator.weight += views;
-          row.weighted.set(mapping.column, accumulator);
+          continue;
         }
+
+        // Read per column rather than once per row, because different weighted columns
+        // weight by different things - and a column named here that the report does not
+        // carry would otherwise silently weight everything by zero, which is exactly how
+        // impressions_ctr came out null for every row.
+        const weight = this.toNumber(valueAt(mapping.weightBy ?? '')) ?? 0;
+        const accumulator = row.weighted.get(mapping.column) ?? { total: 0, weight: 0 };
+        accumulator.total += value * weight;
+        accumulator.weight += weight;
+        row.weighted.set(mapping.column, accumulator);
       }
     }
 
     // Note on dimension values: ZZ country codes and NULL-anonymised buckets are real
     // parts of the partition and are deliberately NOT filtered out - dropping them would
     // undercount every total.
-    return { rows: [...folded.values()], unknownVideoIds, unmappedColumns };
+    return { rows: [...folded.values()], unknownVideoIds, unmappedColumns, missingWeights };
   }
 
   /**
